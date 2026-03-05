@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BeaconScanner/BeaconScanner.csproj" />
+  <Project Path="BeaconServer/BeaconServer.csproj" />
+</Solution>

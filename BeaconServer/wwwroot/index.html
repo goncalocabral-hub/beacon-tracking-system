@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Beacon Map</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 18px; }
+    .wrap { display:flex; gap: 18px; align-items:flex-start; }
+    .map {
+      position: relative;
+      width: 900px;
+      height: 520px;
+      border: 1px solid #ddd;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #f7f7f7;
+    }
+    /* Se não tiveres mapa.png, fica só cinzento */
+    .map::before{
+      content:"";
+      position:absolute; inset:0;
+      background: url("mapa.png") center/cover no-repeat;
+      opacity: 1;
+    }
+
+    .pin {
+      position:absolute;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      border: 2px solid #111;
+      box-shadow: 0 2px 8px rgba(0,0,0,.25);
+      background: #9aa0a6; /* offline */
+      z-index: 2;
+    }
+    .label {
+      position:absolute;
+      transform: translate(10px, -50%);
+      font-size: 12px;
+      background: rgba(255,255,255,.92);
+      border: 1px solid #eee;
+      padding: 2px 6px;
+      border-radius: 999px;
+      white-space: nowrap;
+      z-index: 2;
+    }
+
+    .online { background: #2ecc71; }
+    .blink { animation: blink 0.9s infinite; }
+    @keyframes blink { 0%,100% { filter: brightness(1); } 50% { filter: brightness(2.2); } }
+
+    .side {
+      width: 360px;
+      border: 1px solid #eee;
+      border-radius: 14px;
+      padding: 12px;
+    }
+    table { width:100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 6px; border-bottom: 1px solid #eee; text-align:left; }
+    .muted { color:#666; font-size: 12px; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #eee; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>Mapa 2D — Beacons</h1>
+  <div class="muted">Os pontos ficam verdes e a piscar quando o PC deteta o beacon.</div>
+
+  <div class="wrap">
+    <div class="map" id="map"></div>
+
+    <div class="side">
+      <div><b>Status:</b> <span id="status" class="pill">a ligar…</span></div>
+      <div class="muted" style="margin:8px 0 10px;">
+        Online = visto nos últimos <span id="ttl">10</span>s
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>Beacon</th><th>RSSI</th><th>Last seen</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@8.0.8/dist/browser/signalr.min.js"></script>
+  <script>
+    const ONLINE_TTL_SECONDS = 10;
+    document.getElementById("ttl").textContent = ONLINE_TTL_SECONDS;
+
+    // ✅ OS TEUS 5 BEACONS (stable keys)
+    // Ajusta só os x,y para baterem certo no mapa
+    const BEACONS = {
+      "27_010F2022": { name: "TB15-1 #1",    x: 120, y: 90  },
+      "27_01092002": { name: "TB15-1 #2",    x: 420, y: 130 },
+      "27_01092026": { name: "SB18-3 #1",    x: 650, y: 260 },
+      "27_01092022": { name: "SB18-3 #2",    x: 300, y: 360 },
+      "18_0109212A": { name: "CardTag_CT18-3", x: 780, y: 420 }
+    };
+
+    const mapEl = document.getElementById("map");
+    const rowsEl = document.getElementById("rows");
+    const statusEl = document.getElementById("status");
+
+    const state = {}; // beaconId -> {rssi,lastSeenMs}
+
+    function addPins() {
+      Object.entries(BEACONS).forEach(([id, b]) => {
+        const pin = document.createElement("div");
+        pin.className = "pin";
+        pin.style.left = b.x + "px";
+        pin.style.top  = b.y + "px";
+        pin.dataset.id = id;
+
+        const label = document.createElement("div");
+        label.className = "label";
+        label.style.left = b.x + "px";
+        label.style.top  = b.y + "px";
+        label.textContent = `${b.name}`;
+
+        mapEl.appendChild(pin);
+        mapEl.appendChild(label);
+      });
+    }
+
+    function renderTable() {
+      rowsEl.innerHTML = "";
+      Object.keys(BEACONS).forEach(id => {
+        const b = BEACONS[id];
+        const s = state[id];
+        const rssi = s ? s.rssi : "-";
+        const last = s ? Math.round((Date.now() - s.lastSeenMs)/1000) + "s" : "-";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td><b>${b.name}</b><div class="muted">${id}</div></td>
+                        <td>${rssi}</td>
+                        <td>${last}</td>`;
+        rowsEl.appendChild(tr);
+      });
+    }
+
+    function updatePins() {
+      const now = Date.now();
+      mapEl.querySelectorAll(".pin").forEach(pin => {
+        const id = pin.dataset.id;
+        const s = state[id];
+        const online = s && (now - s.lastSeenMs) <= ONLINE_TTL_SECONDS * 1000;
+        pin.classList.toggle("online", online);
+        pin.classList.toggle("blink", online);
+      });
+    }
+
+    addPins();
+    renderTable();
+    updatePins();
+    setInterval(() => { updatePins(); renderTable(); }, 1000);
+
+    // SignalR
+    const connection = new signalR.HubConnectionBuilder()
+      .withUrl("/hub")
+      .withAutomaticReconnect()
+      .build();
+
+    connection.on("beacon_seen", (e) => {
+      if (!BEACONS[e.beaconId]) return;
+      state[e.beaconId] = { rssi: e.lastRssi, lastSeenMs: Date.now() };
+      updatePins();
+      renderTable();
+    });
+
+    connection.start()
+      .then(() => { statusEl.textContent = "ligado"; })
+      .catch(err => { statusEl.textContent = "erro"; console.error(err); });
+  </script>
+</body>
+</html>
